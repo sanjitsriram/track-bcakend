@@ -1,5 +1,5 @@
 const { JWT } = require('google-auth-library');
-const key = require("../config/push-key.json");
+const key = require("../config/pushkey.json");
 
 const FCM_URL = `https://fcm.googleapis.com/v1/projects/${process.env.FIREBASE_PROJECT_ID}/messages:send`;
 const SCOPES = ['https://www.googleapis.com/auth/firebase.messaging'];

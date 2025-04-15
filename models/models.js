@@ -160,6 +160,15 @@ const Order = sequelize.define('Order', {
     defaultValue: DataTypes.UUIDV4,
     primaryKey: true,
   },
+  vendorId: {
+    type: DataTypes.UUID,
+    allowNull: true, // or false if every order must have a vendor
+    references: {
+      model: 'Vendor', // this should match the actual table name (case-sensitive)
+      key: 'vendorId',
+    },
+  },
+  
   driverId: {
     type: DataTypes.UUID,
     allowNull: false,
@@ -182,11 +191,11 @@ const Order = sequelize.define('Order', {
   },
   pickupLocation: {
     type: DataTypes.STRING,
-    allowNull: false,
+    allowNull: true,
   },
   deliveryLocation: {
     type: DataTypes.STRING,
-    allowNull: false,
+    allowNull: true,
   },
   status: {
     type: DataTypes.ENUM('pending', 'assigned', 'delivered', 'cancelled'),
@@ -194,29 +203,29 @@ const Order = sequelize.define('Order', {
   },
   pickupTime: {
     type: DataTypes.DATE,
-    allowNull: false,
+    allowNull: true,
   },
   deliveryTime: {
     type: DataTypes.DATE,
-    allowNull: false,
+    allowNull: true,
   },
   distanceInKm: {
     type: DataTypes.FLOAT,
-    allowNull: false,
+    allowNull: true,
     defaultValue: 0,
   },
   loadWeightInTons: {
     type: DataTypes.FLOAT,
-    allowNull: false,
+    allowNull: true,
     defaultValue: 0,
   },
   goodsType: {
     type: DataTypes.STRING,
-    allowNull: false,
+    allowNull: true,
   },
   fare: {
     type: DataTypes.FLOAT,
-    allowNull: false,
+    allowNull: true,
   },
   notes: {
     type: DataTypes.TEXT,

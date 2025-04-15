@@ -1,5 +1,6 @@
 require('dotenv').config(); // Load environment variables
 const express = require('express');
+const admin = require('firebase-admin');
 const helmet = require('helmet');
 const cors = require('cors');
 const compression = require('compression');
@@ -10,6 +11,8 @@ const sequelize = require('./config/dbconfig'); // Database connection
 const { User, Order, Location, Vehicle, UserLog,Vendor,Product } = require('./models/models');
 const { hashPassword } = require('./middleware/auth'); // ✅ Update path if needed
 const argon2 = require('argon2');
+const pushNotification = require('./controllers/pushnotification');
+
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -504,11 +507,10 @@ app.get('/api/admin/get-allvendors', passport.authenticate('jwt', { session: fal
   console.log("🔐 Fetching all vendors for the admin:", userId);
 
   try {
-    // Fetch all vendors with their associated products using eager loading
     const vendors = await Vendor.findAll({
       include: [{
         model: Product,
-        attributes: ['productId', 'name', 'description', 'unitPrice', 'status', 'createdAt', 'updatedAt'],  // Use productId instead of id
+        attributes: ['productId', 'name', 'description', 'unitPrice', 'status', 'createdAt', 'updatedAt', 'category'], // ✅ added 'category'
       }]
     });
 
@@ -518,6 +520,20 @@ app.get('/api/admin/get-allvendors', passport.authenticate('jwt', { session: fal
     }
 
     const vendorList = vendors.map(vendor => {
+      const vendorProducts = vendor.Products.map(product => ({
+        id: product.productId,
+        name: product.name,
+        description: product.description || 'No description',
+        price: product.unitPrice,
+        status: product.status,
+        category: product.category || 'Uncategorized',  // ✅ include per-product category
+        createdAt: product.createdAt,
+        updatedAt: product.updatedAt,
+      }));
+
+      // ✅ Derive categories from the product list (unique values)
+      const uniqueCategories = [...new Set(vendorProducts.map(p => p.category))];
+
       const vendorData = {
         id: vendor.vendorId,
         name: vendor.name,
@@ -530,23 +546,11 @@ app.get('/api/admin/get-allvendors', passport.authenticate('jwt', { session: fal
         pincode: vendor.pincode || 'No pincode',
         gstNumber: vendor.gstNumber || 'No GST number',
         companyName: vendor.companyName,
+        category: uniqueCategories.join(', ') || 'No category', // ✅ combine categories into one string
         status: vendor.status,
         createdAt: vendor.createdAt || new Date(),
         updatedAt: vendor.updatedAt || new Date(),
       };
-
-      // Extract product details
-      const vendorProducts = vendor.Products.map(product => {
-        return {
-          id: product.productId,  // Use productId instead of id
-          name: product.name,
-          description: product.description || 'No description',
-          price: product.unitPrice,
-          status: product.status,
-          createdAt: product.createdAt,
-          updatedAt: product.updatedAt,
-        };
-      });
 
       return { vendor: vendorData, products: vendorProducts };
     });
@@ -663,6 +667,386 @@ app.post('/api/admin/vendordetail', passport.authenticate('jwt', { session: fals
     return res.status(500).json({ message: "Internal server error." });
   }
 });
+
+
+app.delete('/api/admin/delete-vendor/:vendorId', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  try {
+    const adminId = req.user.id; // Extracted from JWT token
+    const { vendorId } = req.params;
+
+    console.log("📥 Received request to delete vendor");
+    console.log("🔑 Authenticated Admin ID:", adminId);
+    console.log("🔍 Vendor ID to delete:", vendorId);
+
+    const vendor = await Vendor.findByPk(vendorId);
+
+    if (!vendor) {
+      console.log("❌ Vendor not found with ID:", vendorId);
+      return res.status(404).json({ message: "Vendor not found." });
+    }
+
+    // Only allow deletion if the vendor belongs to the admin
+
+    // Delete all associated products
+    const deletedProducts = await Product.destroy({ where: { vendorId } });
+    console.log(`🗑️ Deleted ${deletedProducts} products for vendor ID: ${vendorId}`);
+
+    // Delete the vendor
+    await vendor.destroy();
+    console.log(`✅ Vendor ID ${vendorId} deleted successfully.`);
+
+    return res.status(200).json({ message: "Vendor and its products deleted successfully." });
+
+  } catch (err) {
+    console.error("❌ Error deleting vendor:", err);
+    return res.status(500).json({ message: "Internal server error." });
+  }
+});
+
+app.get('/api/admin/activeVendors', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  try {
+    const adminId = req.user.id;  // Get the admin ID from the JWT token
+    console.log(`✅ Admin ID extracted from token: ${adminId}`);
+
+    // Fetch active vendors
+    console.log("📡 Fetching vendors with status 'active' from DB...");
+    const vendors = await Vendor.findAll({
+      where: {
+        status: 'Active',
+      },
+    });
+
+    // Log raw vendor data
+    console.log("📦 Raw vendors fetched from DB:", JSON.stringify(vendors, null, 2));
+
+    // If no vendors found
+    if (!vendors || vendors.length === 0) {
+      console.warn("⚠️ No active vendors found.");
+      return res.status(404).json({ message: "No active vendors found." });
+    }
+
+    // Map and format vendor data
+    console.log(`🛠 Mapping ${vendors.length} vendors...`);
+    const vendorData = vendors.map((vendor) => {
+      const mappedVendor = {
+        id: vendor.vendorId,
+        name: vendor.name,
+        city: vendor.city,
+        phone: vendor.phone,
+        address: vendor.address,
+        status: vendor.status,
+        products: vendor.products, // Assuming Sequelize association with products
+      };
+      console.log("✅ Mapped vendor:", mappedVendor);
+      return mappedVendor;
+    });
+
+    console.log("🎯 Final vendor response to be sent:", JSON.stringify(vendorData, null, 2));
+    return res.status(200).json(vendorData);
+
+  } catch (err) {
+    console.error("❌ Error fetching active vendors:", err);
+    return res.status(500).json({ message: "Failed to fetch active vendors." });
+  }
+});
+
+app.delete('/api/admin/delete-user/:userId',
+  passport.authenticate('jwt', { session: false }),
+  async (req, res) => {
+    try {
+      const adminId = req.user.id; // From JWT
+      const { userId } = req.params;
+
+      console.log("📥 Received request to delete user");
+      console.log("🔑 Authenticated Admin ID:", adminId);
+      console.log("🧍 User ID to delete:", userId);
+
+      // Use userId instead of id
+      const user = await User.findByPk(userId);
+
+      if (!user) {
+        console.log("❌ User not found with ID:", userId);
+        return res.status(404).json({ message: "User not found." });
+      }
+
+      // Optional: Add any access check logic here if needed
+      // Example: only allow admins to delete non-admin users
+
+      // Delete user logs if applicable
+      const deletedLogs = await UserLog.destroy({ where: { user_id: userId } });
+      console.log(`🗑️ Deleted ${deletedLogs} log entries for user ID: ${userId}`);
+
+      // Delete user
+      await user.destroy();
+      console.log(`✅ User ID ${userId} deleted successfully.`);
+
+      return res.status(200).json({ message: "User and associated logs deleted successfully." });
+
+    } catch (err) {
+      console.error("❌ Error deleting user:", err);
+      return res.status(500).json({ message: "Internal server error." });
+    }
+  }
+);
+
+app.get('/api/admin/dashboard-summary', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  const userId = req.user.id;
+  console.log("🔐 Fetching dashboard summary for the admin:", userId);
+
+  try {
+    // Fetch total number of orders
+    const totalOrders = await Order.count();
+
+    // Fetch total number of active vendors
+    const totalVendors = await Vendor.count();
+
+    // Fetch total number of active delivery partners
+    const totalDeliveryPartners = await User.count();
+
+    // Prepare summary response
+    const summary = {
+      totalOrders,
+      totalVendors,
+      totalDeliveryPartners,
+    };
+
+    console.log("🎉 Dashboard summary fetched successfully:", summary);
+    return res.status(200).json(summary);
+
+  } catch (err) {
+    console.error("❌ Error fetching dashboard summary:", err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+  // Make sure to import the User model
+
+app.post('/api/admin/assign-order', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  try {
+    const adminId = req.user.id;
+    const {
+      driverId,
+      vendorId,
+      pickupTime,
+      deliveryTime,
+      goodsType,
+      fare,
+      weight,
+      distance,
+      notes,
+      location,     // format: "latitude,longitude"
+      deliveryPlace // full address string
+    } = req.body;
+
+    console.log("📥 Incoming request body:", req.body);
+    
+    // Validate required fields
+    if (!driverId || !vendorId) {
+      console.error("❌ Missing required fields: driverId, vendorId.");
+      return res.status(400).json({ message: 'Missing required fields: driverId, vendorId.' });
+    }
+
+    // Fetch driver details from the User table using driverId
+    const driver = await User.findOne({
+      where: { id: driverId },
+      attributes: ['id', 'name', 'email', 'phone'], // You can fetch more fields as needed
+    });
+
+    if (!driver) {
+      console.error("❌ Driver not found for driverId:", driverId);
+      return res.status(404).json({ message: 'Driver not found.' });
+    }
+
+    const driverName = driver.name;  // Assuming 'name' field stores the driver's name
+    console.log("✅ Driver found:", driverName);
+
+    // Split location string if available
+    let latitude = null, longitude = null;
+    if (location) {
+      console.log("📍 Parsing location:", location);
+      const locArray = location.split(',').map(Number);
+      if (locArray.length === 2 && !isNaN(locArray[0]) && !isNaN(locArray[1])) {
+        latitude = locArray[0];
+        longitude = locArray[1];
+        console.log("✅ Parsed latitude:", latitude, "longitude:", longitude);
+      } else {
+        console.error("❌ Invalid location format. Use 'latitude,longitude'.");
+        return res.status(400).json({ message: 'Invalid location format. Use "latitude,longitude".' });
+      }
+    }
+
+    // Save location if available
+    if (latitude && longitude) {
+      console.log("📍 Saving location for driverId:", driverId);
+      await Location.create({
+        userId: driverId,
+        latitude,
+        longitude,
+        address: deliveryPlace || '',
+        lastUpdated: new Date(),
+      });
+      console.log("✅ Location saved successfully.");
+    }
+
+    // Create the order with optional/nullable fields
+    console.log("📦 Creating order with details:", {
+      driverId,
+      assignedByAdminId: adminId,
+      driverName,
+      pickupLocation: deliveryPlace || '',
+      deliveryLocation: deliveryPlace || '',
+      status: 'assigned',
+      pickupTime: pickupTime ? new Date(pickupTime) : null,
+      deliveryTime: deliveryTime ? new Date(deliveryTime) : null,
+      distanceInKm: distance || 0,
+      loadWeightInTons: weight || 0,
+      goodsType: goodsType || 'Not Specified',
+      fare: fare || 0,
+      notes: notes || '',
+    });
+    const order = await Order.create({
+      driverId,
+      assignedByAdminId: adminId,
+      driverName,
+      pickupLocation: deliveryPlace || '',
+      deliveryLocation: deliveryPlace || '',
+      status: 'assigned',
+      pickupTime: pickupTime ? new Date(pickupTime) : null,
+      deliveryTime: deliveryTime ? new Date(deliveryTime) : null,
+      distanceInKm: distance || 0,
+      loadWeightInTons: weight || 0,
+      goodsType: goodsType || 'Not Specified',
+      fare: fare || 0,
+      notes: notes || '',
+    });
+    console.log("✅ Order created successfully:", order);
+
+    // Find the latest FCM token for the driver
+    console.log("🔍 Fetching the latest FCM token for driverId:", driverId);
+    const userLog = await UserLog.findOne({
+      where: { user_id: driverId },
+      order: [['timestamp', 'DESC']],
+    });
+
+    if (!userLog) {
+      console.error("❌ No user log found for driverId:", driverId);
+    }
+
+    // Send push notification if FCM token is available
+    if (userLog && userLog.fcmToken) {
+      console.log("📲 FCM token found, sending push notification...");
+      const message = {
+        message: {
+          token: userLog.fcmToken,
+          notification: {
+            title: 'New Order Assigned 🚚',
+            body: `Hi ${driverName}, you’ve been assigned a new order.`,
+          },
+          android: {
+            notification: {
+              sound: 'default',
+              color: '#00aaff',
+            },
+          },
+          data: {
+            orderId: order.orderId.toString(),
+            driverId: driverId,
+            vendorId: vendorId,
+          },
+        },
+      };
+
+      const fcmResponse = await pushNotification.sendMessage(message);
+      console.log("📲 Push sent successfully:", fcmResponse);
+    } else {
+      console.warn("⚠️ No FCM token found for driverId:", driverId);
+    }
+
+    return res.status(201).json({
+      message: 'Order assigned and location saved successfully.',
+      order,
+    });
+  } catch (err) {
+    console.error('❌ Error in order assignment:', err);
+    return res.status(500).json({ message: 'Internal server error.' });
+  }
+});
+
+
+// 📦 models/Order.js, Location.js, Vendor.js should be properly associated with the User model via `userId` and `driverId`
+app.get('/api/user/user-order', passport.authenticate('jwt', { session: false }), async (req, res) => {
+  const userId = req.user.id;
+  console.log("🔐 Fetching orders for user ID:", userId);
+
+  try {
+    const orders = await Order.findAll({
+      where: { driverId: userId },
+      order: [['createdAt', 'DESC']],
+    });
+
+    if (!orders || orders.length === 0) {
+      console.log("❌ No orders found for user:", userId);
+      return res.status(200).json({ orders: [] });
+    }
+
+    const safeOrders = await Promise.all(orders.map(async (order) => {
+      const location = await Location.findOne({
+        where: { userId: order.driverId },
+      });
+
+      const vendor = await Vendor.findOne({
+        where: { vendorId: order.vendorId },
+      });
+
+      return {
+        id: order.id,
+        orderId: order.orderId,
+        pickupLocation: order.pickupLocation,
+        deliveryLocation: order.deliveryLocation,
+        status: order.status,
+        pickupTime: order.pickupTime,
+        deliveryTime: order.deliveryTime,
+        distanceInKm: order.distanceInKm,
+        loadWeightInTons: order.loadWeightInTons,
+        goodsType: order.goodsType,
+        fare: order.fare,
+        notes: order.notes,
+        createdAt: order.createdAt,
+        updatedAt: order.updatedAt,
+        location: location ? {
+          latitude: location.latitude,
+          longitude: location.longitude,
+          address: location.address,
+        } : null,
+        vendor: vendor ? {
+          vendorId: vendor.vendorId,
+          name: vendor.name,
+          phone: vendor.phone,
+          email: vendor.email,
+          companyName: vendor.companyName,
+          address: vendor.address,
+          gstNumber: vendor.gstNumber,
+          // Add any other vendor fields you want here
+        } : null,
+      };
+    }));
+
+    console.log("✅ Orders response for user:", userId);
+    console.dir(safeOrders, { depth: null });
+
+    return res.status(200).json({ orders: safeOrders });
+
+  } catch (error) {
+    console.error("❌ Error fetching orders:", error);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
+
+
+
+
 
 
 
