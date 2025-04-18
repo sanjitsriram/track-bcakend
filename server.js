@@ -821,155 +821,143 @@ app.get('/api/admin/dashboard-summary', passport.authenticate('jwt', { session: 
   // Make sure to import the User model
 
 app.post('/api/admin/assign-order', passport.authenticate('jwt', { session: false }), async (req, res) => {
-  try {
-    const adminId = req.user.id;
-    const {
-      driverId,
-      vendorId,
-      pickupTime,
-      deliveryTime,
-      goodsType,
-      fare,
-      weight,
-      distance,
-      notes,
-      location,     // format: "latitude,longitude"
-      deliveryPlace // full address string
-    } = req.body;
-
-    console.log("📥 Incoming request body:", req.body);
-    
-    // Validate required fields
-    if (!driverId || !vendorId) {
-      console.error("❌ Missing required fields: driverId, vendorId.");
-      return res.status(400).json({ message: 'Missing required fields: driverId, vendorId.' });
-    }
-
-    // Fetch driver details from the User table using driverId
-    const driver = await User.findOne({
-      where: { id: driverId },
-      attributes: ['id', 'name', 'email', 'phone'], // You can fetch more fields as needed
-    });
-
-    if (!driver) {
-      console.error("❌ Driver not found for driverId:", driverId);
-      return res.status(404).json({ message: 'Driver not found.' });
-    }
-
-    const driverName = driver.name;  // Assuming 'name' field stores the driver's name
-    console.log("✅ Driver found:", driverName);
-
-    // Split location string if available
-    let latitude = null, longitude = null;
-    if (location) {
-      console.log("📍 Parsing location:", location);
-      const locArray = location.split(',').map(Number);
-      if (locArray.length === 2 && !isNaN(locArray[0]) && !isNaN(locArray[1])) {
-        latitude = locArray[0];
-        longitude = locArray[1];
-        console.log("✅ Parsed latitude:", latitude, "longitude:", longitude);
-      } else {
-        console.error("❌ Invalid location format. Use 'latitude,longitude'.");
-        return res.status(400).json({ message: 'Invalid location format. Use "latitude,longitude".' });
+    try {
+      const adminId = req.user.id;
+      const {
+        driverId,
+        vendorId,        // ✅ vendorId received in request body
+        pickupTime,
+        deliveryTime,
+        goodsType,
+        fare,
+        weight,
+        distance,
+        notes,
+        location,        // format: "latitude,longitude"
+        deliveryPlace    // full address string
+      } = req.body;
+  
+      console.log("📥 Incoming request body:", req.body);
+      
+      // Validate required fields
+      if (!driverId || !vendorId) {
+        console.error("❌ Missing required fields: driverId, vendorId.");
+        return res.status(400).json({ message: 'Missing required fields: driverId, vendorId.' });
       }
-    }
-
-    // Save location if available
-    if (latitude && longitude) {
-      console.log("📍 Saving location for driverId:", driverId);
-      await Location.create({
-        userId: driverId,
-        latitude,
-        longitude,
-        address: deliveryPlace || '',
-        lastUpdated: new Date(),
+  
+      // Fetch driver details from User table
+      const driver = await User.findOne({
+        where: { id: driverId },
+        attributes: ['id', 'name', 'email', 'phone'],
       });
-      console.log("✅ Location saved successfully.");
-    }
-
-    // Create the order with optional/nullable fields
-    console.log("📦 Creating order with details:", {
-      driverId,
-      assignedByAdminId: adminId,
-      driverName,
-      pickupLocation: deliveryPlace || '',
-      deliveryLocation: deliveryPlace || '',
-      status: 'assigned',
-      pickupTime: pickupTime ? new Date(pickupTime) : null,
-      deliveryTime: deliveryTime ? new Date(deliveryTime) : null,
-      distanceInKm: distance || 0,
-      loadWeightInTons: weight || 0,
-      goodsType: goodsType || 'Not Specified',
-      fare: fare || 0,
-      notes: notes || '',
-    });
-    const order = await Order.create({
-      driverId,
-      assignedByAdminId: adminId,
-      driverName,
-      pickupLocation: deliveryPlace || '',
-      deliveryLocation: deliveryPlace || '',
-      status: 'assigned',
-      pickupTime: pickupTime ? new Date(pickupTime) : null,
-      deliveryTime: deliveryTime ? new Date(deliveryTime) : null,
-      distanceInKm: distance || 0,
-      loadWeightInTons: weight || 0,
-      goodsType: goodsType || 'Not Specified',
-      fare: fare || 0,
-      notes: notes || '',
-    });
-    console.log("✅ Order created successfully:", order);
-
-    // Find the latest FCM token for the driver
-    console.log("🔍 Fetching the latest FCM token for driverId:", driverId);
-    const userLog = await UserLog.findOne({
-      where: { user_id: driverId },
-      order: [['timestamp', 'DESC']],
-    });
-
-    if (!userLog) {
-      console.error("❌ No user log found for driverId:", driverId);
-    }
-
-    // Send push notification if FCM token is available
-    if (userLog && userLog.fcmToken) {
-      console.log("📲 FCM token found, sending push notification...");
-      const message = {
-        message: {
-          token: userLog.fcmToken,
-          notification: {
-            title: 'New Order Assigned 🚚',
-            body: `Hi ${driverName}, you’ve been assigned a new order.`,
-          },
-          android: {
+  
+      if (!driver) {
+        console.error("❌ Driver not found for driverId:", driverId);
+        return res.status(404).json({ message: 'Driver not found.' });
+      }
+  
+      const driverName = driver.name;
+      console.log("✅ Driver found:", driverName);
+  
+      // Parse location string
+      let latitude = null, longitude = null;
+      if (location) {
+        console.log("📍 Parsing location:", location);
+        const locArray = location.split(',').map(Number);
+        if (locArray.length === 2 && !isNaN(locArray[0]) && !isNaN(locArray[1])) {
+          latitude = locArray[0];
+          longitude = locArray[1];
+          console.log("✅ Parsed latitude:", latitude, "longitude:", longitude);
+        } else {
+          console.error("❌ Invalid location format. Use 'latitude,longitude'.");
+          return res.status(400).json({ message: 'Invalid location format. Use "latitude,longitude".' });
+        }
+      }
+  
+      // Save location to Location table
+      if (latitude && longitude) {
+        console.log("📍 Saving location for driverId:", driverId);
+        await Location.create({
+          userId: driverId,
+          latitude,
+          longitude,
+          address: deliveryPlace || '',
+          lastUpdated: new Date(),
+        });
+        console.log("✅ Location saved successfully.");
+      }
+  
+      // Create Order (✅ vendorId added)
+      console.log("📦 Creating order with details...");
+      const order = await Order.create({
+        driverId,
+        vendorId,                          // ✅ Include vendorId
+        assignedByAdminId: adminId,
+        driverName,
+        pickupLocation: deliveryPlace || '',
+        deliveryLocation: deliveryPlace || '',
+        status: 'assigned',
+        pickupTime: pickupTime ? new Date(pickupTime) : null,
+        deliveryTime: deliveryTime ? new Date(deliveryTime) : null,
+        distanceInKm: distance || 0,
+        loadWeightInTons: weight || 0,
+        goodsType: goodsType || 'Not Specified',
+        fare: fare || 0,
+        notes: notes || '',
+      });
+      console.log("✅ Order created successfully:", order);
+  
+      // Get latest FCM token for driver
+      console.log("🔍 Fetching the latest FCM token for driverId:", driverId);
+      const userLog = await UserLog.findOne({
+        where: { user_id: driverId },
+        order: [['timestamp', 'DESC']],
+      });
+  
+      if (!userLog) {
+        console.error("❌ No user log found for driverId:", driverId);
+      }
+  
+      // Send FCM notification
+      if (userLog && userLog.fcmToken) {
+        console.log("📲 FCM token found, sending push notification...");
+        const message = {
+          message: {
+            token: userLog.fcmToken,
             notification: {
-              sound: 'default',
-              color: '#00aaff',
+              title: 'New Order Assigned 🚚',
+              body: `Hi ${driverName}, you’ve been assigned a new order.`,
+            },
+            android: {
+              notification: {
+                sound: 'default',
+                color: '#00aaff',
+              },
+            },
+            data: {
+              orderId: order.orderId.toString(),
+              driverId: driverId.toString(),
+              vendorId: vendorId.toString(),
             },
           },
-          data: {
-            orderId: order.orderId.toString(),
-            driverId: driverId,
-            vendorId: vendorId,
-          },
-        },
-      };
-
-      const fcmResponse = await pushNotification.sendMessage(message);
-      console.log("📲 Push sent successfully:", fcmResponse);
-    } else {
-      console.warn("⚠️ No FCM token found for driverId:", driverId);
+        };
+  
+        const fcmResponse = await pushNotification.sendMessage(message);
+        console.log("📲 Push sent successfully:", fcmResponse);
+      } else {
+        console.warn("⚠️ No FCM token found for driverId:", driverId);
+      }
+  
+      return res.status(201).json({
+        message: 'Order assigned and location saved successfully.',
+        order,
+      });
+    } catch (err) {
+      console.error('❌ Error in order assignment:', err);
+      return res.status(500).json({ message: 'Internal server error.' });
     }
-
-    return res.status(201).json({
-      message: 'Order assigned and location saved successfully.',
-      order,
-    });
-  } catch (err) {
-    console.error('❌ Error in order assignment:', err);
-    return res.status(500).json({ message: 'Internal server error.' });
-  }
 });
+  
 
 
 // 📦 models/Order.js, Location.js, Vendor.js should be properly associated with the User model via `userId` and `driverId`
